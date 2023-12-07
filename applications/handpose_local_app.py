@@ -1,6 +1,6 @@
 #-*-coding:utf-8-*-
-# date:2021-03-12
-# Author: Eric.Lee
+# date:2023-12-07
+# Author: yinyipeng
 # function: handpose demo
 
 import os
@@ -14,7 +14,8 @@ import cv2
 import numpy as np
 import random
 import time
-
+import sys
+sys.path.append('../components/')
 # 加载模型组件库
 from hand_detect.yolo_v3_hand import yolo_v3_hand_model
 from hand_keypoints.handpose_x import handpose_x_model
@@ -214,8 +215,7 @@ def handpose_x_process(info_dict,config):
     #
     img_reco_crop = None
 
-    #cap = cv2.VideoCapture(int(config["camera_id"])) # 开启摄像机
-    cap = cv2.VideoCapture('2.mp4')
+    cap = cv2.VideoCapture(int(config["camera_id"])) # 开启摄像机
 
 
     fps = cap.get(cv2.CAP_PROP_FPS)

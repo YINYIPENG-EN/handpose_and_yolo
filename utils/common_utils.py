@@ -1,7 +1,7 @@
 #-*-coding:utf-8-*-
 # date:2023-12-07
 # Author: yinyipeng
-# function: utils
+# function: common utils
 
 import os
 import shutil

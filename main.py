@@ -14,9 +14,8 @@ def demo_logo():
     print("\n/*********************************/")
     print("/---------------------------------/\n")
     print("             WELCOME      ")
-    print("           << APP_X >>         ")
-    print("    Copyright 2021 Eric.Lee2021   ")
-    print("        Apache License 2.0       ")
+    print("             yinyipeng    ")
+    print("        wechat:y24065939s  ")
     print("\n/---------------------------------/")
     print("/*********************************/\n")
 
@@ -24,5 +23,4 @@ if __name__ == '__main__':
     demo_logo()
     cfg_file = "./lib/hand_lib/cfg/handpose.cfg"
     main_handpose_x(cfg_file)#加载 handpose 应用
-
     print(" well done ~")
