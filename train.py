@@ -6,6 +6,7 @@
 import os
 import argparse
 from torch.utils.tensorboard import SummaryWriter
+import torch.nn as nn
 import  sys
 sys.path.append('components/hand_keypoints/')
 from utils.model_utils import *
