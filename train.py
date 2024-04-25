@@ -6,6 +6,7 @@
 import os
 import argparse
 
+from torch import optim
 from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 import  sys
@@ -18,17 +19,24 @@ from models.squeezenet import squeezenet1_1,squeezenet1_0
 from models.shufflenetv2 import ShuffleNetV2
 from models.shufflenet import ShuffleNet
 from models.mobilenetv2 import MobileNetV2
-from loss.loss import *
+from loss.loss import got_total_wing_loss
 import time
 import json
 from loguru import logger
 import torch.nn as nn
 
 
-def calc_mes(predicted, target):
-    squared_diff = np.square(predicted - target)
-    mes = np.mean(squared_diff)
-    return mes
+def mean_euclidean_distance(preds, targets):
+    """计算平均欧氏距离"""
+    dists = torch.sqrt(torch.sum((preds - targets) ** 2, dim=-1))
+    return dists.mean().item()
+
+def percentage_correct_keypoints(preds, targets, threshold=0.05):
+    """计算正确关键点的百分比，即PCK"""
+    dists = torch.sqrt(torch.sum((preds - targets) ** 2, dim=-1))
+    correct = dists < threshold
+    return correct.float().mean().item()
+
 
 def trainer(ops,f_log):
     writer = SummaryWriter(log_dir='logs')
@@ -61,10 +69,8 @@ def trainer(ops,f_log):
 
         else:
             print(" no support the model")
-        print(model_)
-        use_cuda = torch.cuda.is_available()
-
-        device = torch.device("cuda" if use_cuda else "cpu")
+        # print(model_)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
         # Dataset
@@ -78,14 +84,14 @@ def trainer(ops,f_log):
                                 batch_size=ops.batch_size,
                                 num_workers=ops.num_workers,
                                 shuffle=True,
-                                pin_memory=False,
-                                drop_last = True)
+                                pin_memory=True,
+                                drop_last=True)
         # 优化器设计
         optimizer_Adam = torch.optim.Adam(model_.parameters(), lr=ops.init_lr, betas=(0.9, 0.99), weight_decay=1e-6)
         # optimizer_SGD = optim.SGD(model_.parameters(), lr=ops.init_lr, momentum=ops.momentum, weight_decay=ops.weight_decay)# 优化器初始化
         optimizer = optimizer_Adam
         # 定义学习率调度器
-        # scheduler = lr_scheduler.StepLR(optimizer, 2, gamma=0.1)  
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, verbose=True)
         # 加载 finetune 模型
         if os.access(ops.fintune_model, os.F_OK):# checkpoint
             chkpt = torch.load(ops.fintune_model, map_location='cpu')
@@ -96,7 +102,10 @@ def trainer(ops,f_log):
         print('/**********************************************/')
         # 损失函数
         if ops.loss_define != 'wing_loss':
-            criterion = nn.MSELoss(reduce=True, reduction='mean')
+            # criterion = nn.MSELoss(reduce=True, reduction='mean')
+            criterion = nn.MSELoss()
+        else:
+            criterion = got_total_wing_loss
 
         step = 0
         idx = 0
@@ -115,54 +124,33 @@ def trainer(ops,f_log):
                 sys.stdout = f_log
             print('\nepoch %d ------>>>'%epoch)
             model_.train()
-            if loss_mean != 0.:
-                if best_loss > (loss_mean/loss_idx):
-                    flag_change_lr_cnt = 0
-                    best_loss = (loss_mean/loss_idx)
-                else:
-                    flag_change_lr_cnt += 1
-
-                    if flag_change_lr_cnt > 50:
-                        init_lr = init_lr*ops.lr_decay
-                        set_learning_rate(optimizer, init_lr)
-                        flag_change_lr_cnt = 0
-
 
             loss_mean = 0.  # 损失均值
-            loss_idx = 0.  # 损失计算计数器
-            mse_list = []
+            running_med = 0.0
+            running_pck = 0.0
+
             for i, (imgs_, pts_) in enumerate(dataloader):
                 # print('imgs_, pts_',imgs_.size(), pts_.size())
-                if use_cuda:
-                    imgs_ = imgs_.cuda()  # pytorch 的 数据输入格式 ： (batch, channel, height, width)
-                    pts_ = pts_.cuda()  # shape [batch_size,42]
+                imgs_ = imgs_.to(device)  # pytorch 的 数据输入格式 ： (batch, channel, height, width)
+                pts_ = pts_.to(device).float()  # shape [batch_size,42]
 
                 output = model_(imgs_.float())  # output 是21个点位(42个坐标)  shape [batch_size, 42]
-                mse = calc_mes(output.cpu().detach().numpy(), pts_.cpu().float().numpy())  # 计算当前batch_size的mse
-                # 将MSE指标写入TensorBoard日志
-                writer.add_scalar('MSE', mse, global_step=epoch * len(dataloader) + i)
-
-                mse_list.append(mse)
-                
-                if ops.loss_define == 'wing_loss':
-                    loss = got_total_wing_loss(output, pts_.float())
-                else:
-                    loss = criterion(output, pts_.float())
+                loss = criterion(output, pts_.float())
+                pck = percentage_correct_keypoints(output, pts_)
+                med = mean_euclidean_distance(output, pts_)
                 loss_mean += loss.item()
-                loss_idx += 1.
-                writer.add_scalar('mean_loss', loss_mean/loss_idx, global_step=epoch * len(dataloader) + i)
-                # if i%10 == 0:
-                #     loc_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                #     print('  %s - %s - epoch [%s/%s] (%s/%s):'%(loc_time,ops.model,epoch,ops.epochs,i,int(dataset.__len__()/ops.batch_size)),\
-                #     'Mean Loss : %.6f - Loss: %.6f'%(loss_mean/loss_idx,loss.item()),\
-                #     ' lr : %.8f'%init_lr,' bs :',ops.batch_size,\
-                #     ' img_size: %s x %s'%(ops.img_size[0],ops.img_size[1]),' best_loss: %.6f'%best_loss)
+                running_med += med
+                running_pck += pck
+                writer.add_scalar('Loss', loss.item(), epoch * len(dataloader) + i)
+                writer.add_scalar('med', med, epoch * len(dataloader) + i)
+                writer.add_scalar('pck', pck, epoch * len(dataloader) + i)
 
                 loc_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-                print('  %s - %s - epoch [%s/%s] (%s/%s):' % (loc_time,ops.model,epoch,ops.epochs,i,int(dataset.__len__()/ops.batch_size)),\
-                'Mean Loss : %.6f - Loss: %.6f'%(loss_mean/loss_idx,loss.item()),\
-                ' lr : %.8f'%init_lr, ' bs :',ops.batch_size,\
-                ' img_size: %s x %s'%(ops.img_size[0],ops.img_size[1]))
+                # print('  %s - %s - epoch [%s/%s] (%s/%s):' % (loc_time, ops.model, epoch,ops.epochs,i,int(dataset.__len__()/ops.batch_size)),\
+                # 'Mean Loss : %.6f - Loss: %.6f'%(loss_mean/loss_idx, loss.item()),\
+                # ' lr : %.8f'%init_lr, ' bs :',ops.batch_size,\
+                # ' img_size: %s x %s'%(ops.img_size[0],ops.img_size[1]))
+                print(f"Epoch [{epoch}/{ops.epochs}], Step [{i+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
                 # 计算梯度
                 loss.backward()
                 # 优化器对模型参数更新
@@ -170,10 +158,17 @@ def trainer(ops,f_log):
                 # 优化器梯度清零
                 optimizer.zero_grad()
                 step += 1
+            # 每个epoch后输出平均损失和指标
+            average_loss = loss_mean / len(dataloader)
+            average_med = running_med / len(dataloader)
+            average_pck = running_pck / len(dataloader)
+            print(
+                f"Epoch [{epoch + 1}/{ops.epochs}], Average Loss: {average_loss:.4f}, Average MED: {average_med:.4f}, Average PCK: {average_pck:.4f}")
             # 所有batch的mse求平均
-            avg_mes = np.mean(mse_list)
-            print("{}_avg_mes {}".format(epoch, avg_mes))
-            torch.save(model_.state_dict(), ops.model_exp + '{}-size-{}-model_epoch-{}-avg_mse-{}.pth'.format(ops.model, ops.img_size[0], epoch, avg_mes))
+            # avg_mes = np.mean(mse_list)
+            # print("{}_avg_mes {}".format(epoch, avg_mes))
+            torch.save(model_.state_dict(), ops.model_exp + '{}-size-{}-model_epoch-{}-avg_mse-{}.pth'.format(ops.model, ops.img_size[0], epoch, average_loss))
+            scheduler.step(average_loss)
         writer.close()
     except Exception as e:
         print('Exception : ',e) # 打印异常
@@ -188,7 +183,7 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='resnet_50', help = 'model : resnet_34,resnet_50,resnet_101,squeezenet1_0,squeezenet1_1,shufflenetv2,shufflenet,mobilenetv2')  # 模型类型
     parser.add_argument('--num_classes', type=int, default=42, help = 'num_classes') #  landmarks 个数*2
     parser.add_argument('--GPUS', type=str, default='0', help='GPUS') # GPU选择
-    parser.add_argument('--train_path', type=str,default = "F:/BaiduNetdiskDownload/handpose_datasets_v1-2021-01-31/handpose_datasets_v1/",help = 'datasets path')  # 训练集标注信息
+    parser.add_argument('--train_path', type=str,default = "handpose_datasets_v1/",help = 'datasets path')  # 训练集标注信息
     parser.add_argument('--pretrained', type=bool, default=False, help = 'imageNet_Pretrain')
     parser.add_argument('--fintune_model', type=str, default='resnet_50-size-256-loss-0.0642.pth', help = 'fintune_model')  # fintune model
     parser.add_argument('--loss_define', type=str, default = 'mse', help = 'define_loss wing_loss or mse')  # 损失函数定义
