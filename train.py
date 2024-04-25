@@ -6,7 +6,7 @@
 import os
 import argparse
 
-from torch.optim.lr_scheduler import StepLR
+from torch.optim import lr_scheduler
 from torch.utils.tensorboard import SummaryWriter
 import  sys
 sys.path.append('components/hand_keypoints/')
@@ -85,7 +85,7 @@ def trainer(ops,f_log):
         # optimizer_SGD = optim.SGD(model_.parameters(), lr=ops.init_lr, momentum=ops.momentum, weight_decay=ops.weight_decay)# 优化器初始化
         optimizer = optimizer_Adam
         # 定义学习率调度器
-        scheduler = StepLR(optimizer, step_size=2, gamma=0.1)  # 每5个epoch将学习率乘以0.1
+        # scheduler = lr_scheduler.StepLR(optimizer, 2, gamma=0.1)  
         # 加载 finetune 模型
         if os.access(ops.fintune_model, os.F_OK):# checkpoint
             chkpt = torch.load(ops.fintune_model, map_location='cpu')
@@ -115,17 +115,17 @@ def trainer(ops,f_log):
                 sys.stdout = f_log
             print('\nepoch %d ------>>>'%epoch)
             model_.train()
-            # if loss_mean != 0.:
-            #     if best_loss > (loss_mean/loss_idx):
-            #         flag_change_lr_cnt = 0
-            #         best_loss = (loss_mean/loss_idx)
-            #     else:
-            #         flag_change_lr_cnt += 1
-            #
-            #         if flag_change_lr_cnt > 50:
-            #             init_lr = init_lr*ops.lr_decay
-            #             set_learning_rate(optimizer, init_lr)
-            #             flag_change_lr_cnt = 0
+            if loss_mean != 0.:
+                if best_loss > (loss_mean/loss_idx):
+                    flag_change_lr_cnt = 0
+                    best_loss = (loss_mean/loss_idx)
+                else:
+                    flag_change_lr_cnt += 1
+
+                    if flag_change_lr_cnt > 50:
+                        init_lr = init_lr*ops.lr_decay
+                        set_learning_rate(optimizer, init_lr)
+                        flag_change_lr_cnt = 0
 
 
             loss_mean = 0.  # 损失均值
@@ -161,13 +161,12 @@ def trainer(ops,f_log):
                 loc_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
                 print('  %s - %s - epoch [%s/%s] (%s/%s):' % (loc_time,ops.model,epoch,ops.epochs,i,int(dataset.__len__()/ops.batch_size)),\
                 'Mean Loss : %.6f - Loss: %.6f'%(loss_mean/loss_idx,loss.item()),\
-                ' lr : %.8f'%init_lr,' bs :',ops.batch_size,\
+                ' lr : %.8f'%init_lr, ' bs :',ops.batch_size,\
                 ' img_size: %s x %s'%(ops.img_size[0],ops.img_size[1]))
                 # 计算梯度
                 loss.backward()
                 # 优化器对模型参数更新
                 optimizer.step()
-                scheduler.step()
                 # 优化器梯度清零
                 optimizer.zero_grad()
                 step += 1
